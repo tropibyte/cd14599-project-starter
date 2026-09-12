@@ -12,8 +12,15 @@ app = Flask(__name__, static_folder='../frontend')
 in_memory_storage = InMemoryStorage()
 order_tracker = OrderTracker(in_memory_storage)
 
+# Sentinel so an absent "status" key can be told apart from one explicitly set
+# to an empty or null value. The former defaults; the latter is a bad request.
+_STATUS_OMITTED = object()
+
+
+# --- Frontend ---------------------------------------------------------------
 
 @app.route('/')
+@app.route('/index')
 def serve_index():
     return send_from_directory(app.static_folder, 'index.html')
 
@@ -23,6 +30,27 @@ def serve_static(filename):
     return send_from_directory(app.static_folder, filename)
 
 
+# --- Error handling ---------------------------------------------------------
+#
+# API clients should always get JSON back. Browser requests for the frontend
+# keep Flask's default HTML pages.
+
+@app.errorhandler(404)
+def handle_not_found(error):
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Resource not found."}), 404
+    return error.get_response()
+
+
+@app.errorhandler(405)
+def handle_method_not_allowed(error):
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Method not allowed for this resource."}), 405
+    return error.get_response()
+
+
+# --- Orders API -------------------------------------------------------------
+
 @app.route('/api/orders', methods=['POST'])
 def add_order_api():
     """Creates a new order from the JSON request body."""
@@ -30,13 +58,18 @@ def add_order_api():
     if not isinstance(payload, dict):
         return jsonify({"error": "Request body must be a JSON object."}), 400
 
+    # An omitted status defaults to 'pending'; anything supplied is validated.
+    status = payload.get("status", _STATUS_OMITTED)
+    if status is _STATUS_OMITTED:
+        status = "pending"
+
     try:
         order = order_tracker.add_order(
             order_id=payload.get("order_id"),
             item_name=payload.get("item_name"),
             quantity=payload.get("quantity"),
             customer_id=payload.get("customer_id"),
-            status=payload.get("status") or "pending",
+            status=status,
         )
     except ValueError as error:
         # A duplicate ID is a conflict; anything else is malformed input.
@@ -76,6 +109,18 @@ def update_order_status_api(order_id):
         return jsonify({"error": str(error)}), status_code
 
     return jsonify(updated_order), 200
+
+
+@app.route('/api/orders/<string:order_id>', methods=['PUT'])
+def update_order_api(order_id):
+    """
+    Alias so a PUT on the order resource itself also updates its status.
+
+    The project brief names this endpoint both ways: the rubric heading says
+    PUT /api/orders/<order_id> while the contract table, the provided tests and
+    the frontend all use the /status suffix. Supporting both costs one line.
+    """
+    return update_order_status_api(order_id)
 
 
 @app.route('/api/orders', methods=['GET'])

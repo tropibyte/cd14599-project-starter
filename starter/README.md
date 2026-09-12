@@ -9,7 +9,7 @@ Run the tests from this directory (the project root):
 pytest
 ```
 
-Run the app:
+Run the app, then open http://127.0.0.1:5000/ :
 
 ```
 python -m backend.app
@@ -17,35 +17,38 @@ python -m backend.app
 
 ## Reflection
 
+- **A parametrized test caught a real bug.** `isinstance(True, int)` is `True` in
+  Python, so `quantity=True` sailed straight through the positive-integer check
+  until the test forced me to exclude booleans explicitly.
+
+- **Interaction assertions pinned down ordering, not just outcomes.** Asserting
+  `mock_storage.get_order.assert_not_called()` on an invalid status is what forced
+  `update_order_status` to validate *before* touching storage. The plain "does it
+  raise" test passed either way.
+
 - **Design trade-off: validate in the class, translate in the route.** Every rule
-  (non-empty IDs, positive integer quantities, known statuses, no duplicate IDs)
-  lives in `OrderTracker` and is signalled with `ValueError`. The Flask routes only
-  decide which HTTP code that error deserves - 409 for a duplicate ID, 404 for a
-  missing order, 400 for everything else. The cost is that the routes inspect the
-  error message text to pick a code, which is a little brittle; the benefit is that
-  the entire rulebook is testable against a mock with no HTTP involved, and a second
-  transport (a CLI, a queue consumer) would inherit the rules for free.
+  lives in `OrderTracker` and surfaces as a `ValueError`; the routes only decide
+  which code it deserves - 409 duplicate, 404 missing, 400 otherwise. The cost is
+  routes matching on message text; the benefit is a rulebook fully testable against
+  a mock with no HTTP involved.
 
-- **Update copies rather than mutates.** `update_order_status` reads the order,
-  builds a new dict with the new status, and saves that. I wrote
-  `test_update_order_status_does_not_mutate_stored_dict` before the implementation,
-  and it earns its place: an in-place mutation would still pass the happy-path test
-  while quietly making the save call redundant and coupling correctness to whether
-  the storage layer happens to hand back a copy.
+- **Next steps.** Add `DELETE /api/orders/<order_id>`, enforce a transition graph so
+  a `delivered` order cannot go back to `pending`, and swap `InMemoryStorage` for
+  SQLite - the storage interface is narrow enough that the swap should not touch
+  `OrderTracker` or the routes.
 
-- **Testing insight: the mock caught ordering, not just outcomes.** Asserting
-  `mock_storage.get_order.assert_not_called()` on an invalid status forced
-  `update_order_status` to check the status *before* touching storage. The plain
-  "does it raise" test passed either way - it was the interaction assertion that
-  pinned down fail-fast behaviour. Parametrizing the quantity test also caught a real
-  bug: `isinstance(True, int)` is `True` in Python, so a boolean sailed through the
-  positive-integer check until I excluded it explicitly.
+## API
 
-- **Next steps.** Add `DELETE /api/orders/<order_id>` to round out CRUD; enforce a
-  status transition graph so an order cannot go from `delivered` back to `pending`;
-  and swap `InMemoryStorage` for a SQLite-backed implementation. The storage
-  interface is already narrow - `save_order`, `get_order`, `get_all_orders` - so that
-  swap should not touch `OrderTracker` or the routes at all.
+| Endpoint | Method | Notes |
+| --- | --- | --- |
+| `/api/orders` | POST | 201 with the order; 400 invalid, 409 duplicate ID |
+| `/api/orders/<order_id>` | GET | 200 with the order; 404 if unknown |
+| `/api/orders/<order_id>/status` | PUT | 200 with the updated order; 400 bad status, 404 unknown |
+| `/api/orders/<order_id>` | PUT | Alias for the above, since the brief names it both ways |
+| `/api/orders` | GET | 200 with all orders |
+| `/api/orders?status=<status>` | GET | 200 with matching orders; 400 if the status is empty or unknown |
+
+Errors come back as `{"error": "..."}`, including for unmatched `/api/` paths.
 
 ## Project structure
 
@@ -59,7 +62,8 @@ python -m backend.app
 │   ├── requirements.txt
 │   └── tests
 │       ├── __init__.py
-│       ├── test_api.py
+│       ├── test_api.py          # provided, unmodified
+│       ├── test_api_extra.py    # additional API tests
 │       └── test_order_tracker.py
 ├── frontend
 │   ├── css

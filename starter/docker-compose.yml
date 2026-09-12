@@ -1,0 +1,10 @@
+# Convenience wrapper around the Dockerfile:
+#   docker compose up --build
+services:
+  udatracker:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      # Never enable the Werkzeug debugger on a published port.
+      FLASK_DEBUG: "0"

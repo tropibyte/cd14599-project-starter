@@ -4,6 +4,8 @@
 # to OrderTracker, and translate the result (or the ValueError it raises) into
 # JSON plus an HTTP status code. All business rules live in order_tracker.py.
 
+import os
+
 from flask import Flask, request, jsonify, send_from_directory
 from backend.order_tracker import OrderTracker
 from backend.in_memory_storage import InMemoryStorage
@@ -125,19 +127,45 @@ def update_order_api(order_id):
 
 @app.route('/api/orders', methods=['GET'])
 def list_orders_api():
-    """Lists every order, or only those matching the ?status= query parameter."""
+    """
+    Lists orders, optionally narrowed by ?status= and/or ?customer_id=.
+
+    With no query parameters this returns everything. The two filters combine,
+    so ?customer_id=C123&status=pending is that customer's pending orders.
+    """
     status_filter = request.args.get("status")
+    customer_filter = request.args.get("customer_id")
 
     try:
-        if status_filter is None:
-            orders = order_tracker.list_all_orders()
-        else:
-            orders = order_tracker.list_orders_by_status(status_filter)
+        orders = order_tracker.list_orders(
+            status=status_filter,
+            customer_id=customer_filter,
+        )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
     return jsonify(orders), 200
 
 
+@app.route('/api/orders/<string:order_id>', methods=['DELETE'])
+def delete_order_api(order_id):
+    """Removes an order and returns the record that was deleted."""
+    try:
+        deleted_order = order_tracker.delete_order(order_id)
+    except ValueError as error:
+        status_code = 404 if "not found" in str(error) else 400
+        return jsonify({"error": str(error)}), status_code
+
+    return jsonify(deleted_order), 200
+
+
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True)
+    # Binding 0.0.0.0 is what makes the Workspace "Flask App" link work.
+    # PORT and FLASK_DEBUG are read from the environment so the same entry
+    # point serves local development (debug on) and the container (debug off,
+    # since the Werkzeug debugger must never be reachable from outside).
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=os.environ.get("FLASK_DEBUG", "1") != "0",
+    )

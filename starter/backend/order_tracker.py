@@ -15,14 +15,24 @@ class OrderTracker:
     # The complete set of states an order may occupy.
     VALID_STATUSES = ("pending", "processing", "shipped", "delivered", "cancelled")
 
+    # Methods every storage backend must provide. Deletion is checked lazily in
+    # delete_order instead, so a read/write-only storage still works here.
+    REQUIRED_STORAGE_METHODS = ("save_order", "get_order", "get_all_orders")
+
     def __init__(self, storage):
-        required_methods = ['save_order', 'get_order', 'get_all_orders']
-        for method in required_methods:
-            if not hasattr(storage, method) or not callable(getattr(storage, method)):
-                raise TypeError(f"Storage object must implement a callable '{method}' method.")
         self.storage = storage
+        for method_name in self.REQUIRED_STORAGE_METHODS:
+            self._require_storage_method(method_name)
 
     # --- Internal validation helpers -------------------------------------
+
+    def _require_storage_method(self, method_name: str):
+        """Raises unless the injected storage exposes a callable method."""
+        method = getattr(self.storage, method_name, None)
+        if not callable(method):
+            raise TypeError(
+                f"Storage object must implement a callable '{method_name}' method."
+            )
 
     @staticmethod
     def _validate_non_empty_string(value, field_name: str):
@@ -82,17 +92,41 @@ class OrderTracker:
         self._validate_non_empty_string(order_id, "Order ID")
         return self.storage.get_order(order_id)
 
+    def list_orders(self, status: str = None, customer_id: str = None) -> list:
+        """
+        Returns stored orders, optionally narrowed by status and/or customer.
+
+        Both filters are optional and combine with AND. This is the single
+        implementation the more specific list_* methods delegate to.
+        """
+        if status is not None:
+            self._validate_status(status)
+        if customer_id is not None:
+            self._validate_non_empty_string(customer_id, "Customer ID")
+
+        orders = list(self.storage.get_all_orders().values())
+        if status is not None:
+            orders = [order for order in orders if order.get("status") == status]
+        if customer_id is not None:
+            orders = [order for order in orders
+                      if order.get("customer_id") == customer_id]
+        return orders
+
     def list_all_orders(self) -> list:
         """Returns every stored order as a list of dictionaries."""
-        return list(self.storage.get_all_orders().values())
+        return self.list_orders()
 
     def list_orders_by_status(self, status: str) -> list:
         """Returns only the orders currently in the given status."""
+        # Validated here as well as in list_orders, because status is mandatory
+        # for this method - passing None must fail rather than list everything.
         self._validate_status(status)
-        return [
-            order for order in self.storage.get_all_orders().values()
-            if order.get("status") == status
-        ]
+        return self.list_orders(status=status)
+
+    def list_orders_by_customer(self, customer_id: str) -> list:
+        """Returns every order belonging to one customer."""
+        self._validate_non_empty_string(customer_id, "Customer ID")
+        return self.list_orders(customer_id=customer_id)
 
     # --- Update -----------------------------------------------------------
 
@@ -115,3 +149,23 @@ class OrderTracker:
         updated_order["status"] = new_status
         self.storage.save_order(order_id, updated_order)
         return updated_order
+
+    # --- Delete -----------------------------------------------------------
+
+    def delete_order(self, order_id: str) -> dict:
+        """
+        Removes an order and returns the record that was deleted.
+
+        The capability check is done here rather than in __init__ so that a
+        storage backend without deletion support stays usable for everything
+        else.
+        """
+        self._validate_non_empty_string(order_id, "Order ID")
+        self._require_storage_method("delete_order")
+
+        existing_order = self.storage.get_order(order_id)
+        if not existing_order:
+            raise ValueError(f"Order with ID '{order_id}' not found.")
+
+        self.storage.delete_order(order_id)
+        return existing_order

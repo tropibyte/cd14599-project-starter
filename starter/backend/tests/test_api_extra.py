@@ -83,7 +83,8 @@ def test_unsupported_method_on_api_returns_json(client):
     """A wrong verb on a real API resource still answers in JSON."""
     _create_order(client, "METHOD001")
 
-    response = client.delete('/api/orders/METHOD001')
+    # PATCH is not part of the contract; GET/PUT/DELETE all are.
+    response = client.patch('/api/orders/METHOD001', json={"quantity": 9})
 
     assert response.status_code == 405
     assert response.is_json
@@ -166,3 +167,97 @@ def test_unknown_status_filter_is_rejected(client):
 
     assert response.status_code == 400
     assert "Invalid status" in response.json['error']
+
+
+def test_filter_by_customer_id(client):
+    """?customer_id= narrows the list to one customer."""
+    _create_order(client, "CUST_A", customer_id="C123")
+    _create_order(client, "CUST_B", customer_id="C999")
+
+    response = client.get('/api/orders?customer_id=C123')
+
+    assert response.status_code == 200
+    assert [order['order_id'] for order in response.json] == ["CUST_A"]
+
+
+def test_filter_by_customer_and_status_combined(client):
+    """The two filters combine with AND."""
+    _create_order(client, "COMBO_A", customer_id="C123", status="pending")
+    _create_order(client, "COMBO_B", customer_id="C123", status="shipped")
+    _create_order(client, "COMBO_C", customer_id="C999", status="pending")
+
+    response = client.get('/api/orders?customer_id=C123&status=pending')
+
+    assert response.status_code == 200
+    assert [order['order_id'] for order in response.json] == ["COMBO_A"]
+
+
+def test_filter_by_unknown_customer_returns_empty_list(client):
+    """A customer with no orders is an empty list, not a 404."""
+    _create_order(client, "SOLO", customer_id="C123")
+
+    response = client.get('/api/orders?customer_id=NOBODY')
+
+    assert response.status_code == 200
+    assert response.json == []
+
+
+def test_empty_customer_filter_is_rejected(client):
+    """?customer_id= with no value is a bad request."""
+    response = client.get('/api/orders?customer_id=')
+
+    assert response.status_code == 400
+    assert "Customer ID" in response.json['error']
+
+
+# --- Delete -----------------------------------------------------------------
+
+def test_delete_order_returns_the_deleted_record(client):
+    """DELETE answers 200 with the record that was removed."""
+    _create_order(client, "DEL001", item_name="Doomed Item")
+
+    response = client.delete('/api/orders/DEL001')
+
+    assert response.status_code == 200
+    assert response.json['order_id'] == "DEL001"
+    assert response.json['item_name'] == "Doomed Item"
+
+
+def test_deleted_order_is_gone_afterwards(client):
+    """The order is really removed, not just reported as removed."""
+    _create_order(client, "DEL002")
+    client.delete('/api/orders/DEL002')
+
+    assert client.get('/api/orders/DEL002').status_code == 404
+    assert client.get('/api/orders').json == []
+
+
+def test_delete_unknown_order_returns_json_404(client):
+    """Deleting something that does not exist is a 404 with a JSON body."""
+    response = client.delete('/api/orders/GHOST')
+
+    assert response.status_code == 404
+    assert response.is_json
+    assert "not found" in response.json['error']
+
+
+def test_delete_is_not_idempotent_in_status_code(client):
+    """
+    A second delete reports 404. Documenting the choice: the endpoint returns
+    the deleted record, so it cannot also pretend a missing order succeeded.
+    """
+    _create_order(client, "DEL003")
+
+    assert client.delete('/api/orders/DEL003').status_code == 200
+    assert client.delete('/api/orders/DEL003').status_code == 404
+
+
+def test_delete_leaves_other_orders_untouched(client):
+    """Deletion is scoped to the one order named in the path."""
+    _create_order(client, "KEEP001")
+    _create_order(client, "DEL004")
+
+    client.delete('/api/orders/DEL004')
+
+    remaining = client.get('/api/orders').json
+    assert [order['order_id'] for order in remaining] == ["KEEP001"]

@@ -1,0 +1,259 @@
+openapi: 3.0.3
+info:
+  title: Udatracker Order API
+  version: "1.0.0"
+  description: >
+    A minimal order-tracking service. Business rules live in OrderTracker;
+    the Flask routes translate them into HTTP. Storage is in-memory, so all
+    orders are lost when the server restarts.
+
+servers:
+  - url: http://127.0.0.1:5000
+    description: Local development server
+
+tags:
+  - name: orders
+
+paths:
+  /api/orders:
+    get:
+      tags: [orders]
+      summary: List orders, optionally filtered
+      description: >
+        With no query parameters this returns every order. The two filters
+        combine with AND.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Status'
+          description: Only orders in this status.
+        - name: customer_id
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+          description: Only orders belonging to this customer.
+      responses:
+        '200':
+          description: Matching orders (an empty list if none match)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+        '400':
+          description: A filter was supplied but empty or invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [orders]
+      summary: Create an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewOrder'
+      responses:
+        '201':
+          description: The created order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: >
+            Missing or invalid field. A status that is present but empty or
+            unknown is rejected; an omitted status defaults to 'pending'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: An order with this ID already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/orders/{order_id}:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    get:
+      tags: [orders]
+      summary: Fetch one order
+      responses:
+        '200':
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: No such order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      tags: [orders]
+      summary: Update status (alias for /status)
+      description: >
+        The project brief names the update endpoint both with and without the
+        /status suffix, so both are supported and behave identically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusUpdate'
+      responses:
+        '200':
+          description: The updated order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: Missing or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No such order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [orders]
+      summary: Delete an order
+      description: >
+        Returns the record that was removed, so a second delete of the same ID
+        reports 404 rather than succeeding silently.
+      responses:
+        '200':
+          description: The deleted order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: No such order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/orders/{order_id}/status:
+    parameters:
+      - $ref: '#/components/parameters/OrderId'
+    put:
+      tags: [orders]
+      summary: Update an order's status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatusUpdate'
+      responses:
+        '200':
+          description: The updated order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: Missing or invalid status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: No such order
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    OrderId:
+      name: order_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+      example: ORD001
+
+  schemas:
+    Status:
+      type: string
+      enum: [pending, processing, shipped, delivered, cancelled]
+
+    Order:
+      type: object
+      required: [order_id, item_name, quantity, customer_id, status]
+      properties:
+        order_id:
+          type: string
+          example: ORD001
+        item_name:
+          type: string
+          example: Laptop
+        quantity:
+          type: integer
+          minimum: 1
+          example: 1
+        customer_id:
+          type: string
+          example: CUST001
+        status:
+          $ref: '#/components/schemas/Status'
+
+    NewOrder:
+      type: object
+      required: [order_id, item_name, quantity, customer_id]
+      properties:
+        order_id:
+          type: string
+          example: ORD001
+        item_name:
+          type: string
+          example: Laptop
+        quantity:
+          type: integer
+          minimum: 1
+          example: 1
+        customer_id:
+          type: string
+          example: CUST001
+        status:
+          allOf:
+            - $ref: '#/components/schemas/Status'
+          default: pending
+          description: Optional. Omit to default to 'pending'.
+
+    StatusUpdate:
+      type: object
+      required: [new_status]
+      properties:
+        new_status:
+          $ref: '#/components/schemas/Status'
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Order with ID 'ORD001' not found.

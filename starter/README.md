@@ -2,18 +2,29 @@
 
 A minimal order-tracking service built test-first: an `OrderTracker` class holding
 the business rules, a thin Flask API in front of it, and in-memory storage behind it.
+Orders are lost when the server restarts.
 
-Run the tests from this directory (the project root):
+## Running
 
-```
-pytest
-```
-
-Run the app, then open http://127.0.0.1:5000/ :
+From this directory (the one containing `backend/`):
 
 ```
-python -m backend.app
+pytest                  # 68 tests
+python -m backend.app   # then open http://127.0.0.1:5000/
 ```
+
+`PORT` and `FLASK_DEBUG` are read from the environment, so `PORT=8000 python -m
+backend.app` moves the server if port 5000 is taken.
+
+### Docker
+
+```
+docker build -t udatracker .
+docker run --rm -p 5000:5000 udatracker
+```
+
+Or `docker compose up --build`. The image runs as a non-root user with the Werkzeug
+debugger disabled, since the container binds a published port.
 
 ## Reflection
 
@@ -32,23 +43,63 @@ python -m backend.app
   routes matching on message text; the benefit is a rulebook fully testable against
   a mock with no HTTP involved.
 
-- **Next steps.** Add `DELETE /api/orders/<order_id>`, enforce a transition graph so
-  a `delivered` order cannot go back to `pending`, and swap `InMemoryStorage` for
-  SQLite - the storage interface is narrow enough that the swap should not touch
-  `OrderTracker` or the routes.
+- **Next steps.** Swap `InMemoryStorage` for SQLite - the interface is four methods
+  wide, so nothing above it should change - and enforce a transition graph so a
+  `delivered` order cannot go back to `pending`. Listing needs pagination before it
+  holds a real catalogue.
 
-## API
+## API reference
 
-| Endpoint | Method | Notes |
-| --- | --- | --- |
-| `/api/orders` | POST | 201 with the order; 400 invalid, 409 duplicate ID |
-| `/api/orders/<order_id>` | GET | 200 with the order; 404 if unknown |
-| `/api/orders/<order_id>/status` | PUT | 200 with the updated order; 400 bad status, 404 unknown |
-| `/api/orders/<order_id>` | PUT | Alias for the above, since the brief names it both ways |
-| `/api/orders` | GET | 200 with all orders |
-| `/api/orders?status=<status>` | GET | 200 with matching orders; 400 if the status is empty or unknown |
+The full contract is in [openapi.yaml](openapi.yaml). Errors are always
+`{"error": "..."}`, including for unmatched `/api/` paths and wrong HTTP verbs.
 
-Errors come back as `{"error": "..."}`, including for unmatched `/api/` paths.
+| Endpoint | Method | Success | Errors |
+| --- | --- | --- | --- |
+| `/api/orders` | POST | 201, the order | 400 invalid field, 409 duplicate ID |
+| `/api/orders` | GET | 200, all orders | - |
+| `/api/orders?status=&customer_id=` | GET | 200, matching orders | 400 empty or unknown filter |
+| `/api/orders/<order_id>` | GET | 200, the order | 404 unknown |
+| `/api/orders/<order_id>/status` | PUT | 200, updated order | 400 bad status, 404 unknown |
+| `/api/orders/<order_id>` | PUT | 200, updated order | Alias for the route above |
+| `/api/orders/<order_id>` | DELETE | 200, deleted order | 404 unknown |
+
+Valid statuses: `pending`, `processing`, `shipped`, `delivered`, `cancelled`.
+On create, an omitted `status` defaults to `pending`; one that is present but empty
+or unknown is a 400 rather than a silent rewrite.
+
+### Sample requests
+
+Create an order:
+
+```
+curl -X POST http://127.0.0.1:5000/api/orders \
+     -H "Content-Type: application/json" \
+     -d '{"order_id":"CURL001","item_name":"Headphones","quantity":1,"customer_id":"CUST123"}'
+```
+
+Fetch it, then ship it:
+
+```
+curl http://127.0.0.1:5000/api/orders/CURL001
+
+curl -X PUT http://127.0.0.1:5000/api/orders/CURL001/status \
+     -H "Content-Type: application/json" \
+     -d '{"new_status":"shipped"}'
+```
+
+List and filter:
+
+```
+curl http://127.0.0.1:5000/api/orders
+curl "http://127.0.0.1:5000/api/orders?status=shipped"
+curl "http://127.0.0.1:5000/api/orders?customer_id=CUST123&status=shipped"
+```
+
+Delete it (the deleted record comes back):
+
+```
+curl -X DELETE http://127.0.0.1:5000/api/orders/CURL001
+```
 
 ## Project structure
 
@@ -56,9 +107,9 @@ Errors come back as `{"error": "..."}`, including for unmatched `/api/` paths.
 .
 ├── backend
 │   ├── __init__.py
-│   ├── app.py
+│   ├── app.py                   # routes only; no business rules
 │   ├── in_memory_storage.py
-│   ├── order_tracker.py
+│   ├── order_tracker.py         # all business rules
 │   ├── requirements.txt
 │   └── tests
 │       ├── __init__.py
@@ -71,6 +122,9 @@ Errors come back as `{"error": "..."}`, including for unmatched `/api/` paths.
 │   ├── index.html
 │   └── js
 │       └── script.js
+├── Dockerfile
+├── docker-compose.yml
+├── openapi.yaml
 ├── pytest.ini
 └── README.md
 ```

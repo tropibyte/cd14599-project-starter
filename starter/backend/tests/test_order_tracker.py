@@ -276,3 +276,141 @@ def test_list_orders_by_status_raises_on_invalid_status(order_tracker, mock_stor
         order_tracker.list_orders_by_status("frozen")
 
     mock_storage.get_all_orders.assert_not_called()
+
+
+# --- list_orders_by_customer ------------------------------------------------
+
+def test_list_orders_by_customer_returns_only_that_customer(order_tracker, mock_storage):
+    """Tests narrowing the list to a single customer."""
+    mock_storage.get_all_orders.return_value = {
+        "A1": {"order_id": "A1", "item_name": "A", "quantity": 1,
+               "customer_id": "C1", "status": "pending"},
+        "B2": {"order_id": "B2", "item_name": "B", "quantity": 2,
+               "customer_id": "C2", "status": "pending"},
+        "C3": {"order_id": "C3", "item_name": "C", "quantity": 3,
+               "customer_id": "C1", "status": "shipped"},
+    }
+
+    result = order_tracker.list_orders_by_customer("C1")
+
+    assert {order["order_id"] for order in result} == {"A1", "C3"}
+
+
+def test_list_orders_by_customer_raises_on_empty_id(order_tracker, mock_storage):
+    """Tests that a blank customer ID is rejected without a storage read."""
+    with pytest.raises(ValueError, match="Customer ID must be a non-empty string."):
+        order_tracker.list_orders_by_customer("")
+
+    mock_storage.get_all_orders.assert_not_called()
+
+
+# --- list_orders (combined filters) -----------------------------------------
+
+def test_list_orders_combines_status_and_customer(order_tracker, mock_storage):
+    """Tests that the two filters narrow with AND, not OR."""
+    mock_storage.get_all_orders.return_value = {
+        "A1": {"order_id": "A1", "item_name": "A", "quantity": 1,
+               "customer_id": "C1", "status": "pending"},
+        "B2": {"order_id": "B2", "item_name": "B", "quantity": 2,
+               "customer_id": "C1", "status": "shipped"},
+        "C3": {"order_id": "C3", "item_name": "C", "quantity": 3,
+               "customer_id": "C2", "status": "pending"},
+    }
+
+    result = order_tracker.list_orders(status="pending", customer_id="C1")
+
+    assert [order["order_id"] for order in result] == ["A1"]
+
+
+def test_list_orders_with_no_filters_returns_everything(order_tracker, mock_storage):
+    """Tests that omitting both filters is the same as listing all orders."""
+    mock_storage.get_all_orders.return_value = {
+        "A1": {"order_id": "A1", "item_name": "A", "quantity": 1,
+               "customer_id": "C1", "status": "pending"},
+        "B2": {"order_id": "B2", "item_name": "B", "quantity": 2,
+               "customer_id": "C2", "status": "shipped"},
+    }
+
+    assert len(order_tracker.list_orders()) == 2
+
+
+def test_list_orders_by_status_rejects_none(order_tracker, mock_storage):
+    """
+    Guards the delegation: list_orders treats None as 'no filter', so
+    list_orders_by_status must reject None itself rather than pass it through
+    and silently return every order.
+    """
+    with pytest.raises(ValueError, match="Status must be a non-empty string."):
+        order_tracker.list_orders_by_status(None)
+
+    mock_storage.get_all_orders.assert_not_called()
+
+
+# --- delete_order -----------------------------------------------------------
+
+def test_delete_order_removes_and_returns_the_record(order_tracker, mock_storage):
+    """Tests that deleting hands back the record that was removed."""
+    stored_order = {
+        "order_id": "ORD001",
+        "item_name": "Laptop",
+        "quantity": 1,
+        "customer_id": "CUST001",
+        "status": "pending",
+    }
+    mock_storage.get_order.return_value = stored_order
+
+    deleted = order_tracker.delete_order("ORD001")
+
+    assert deleted == stored_order
+    mock_storage.delete_order.assert_called_once_with("ORD001")
+
+
+def test_delete_order_raises_when_order_missing(order_tracker, mock_storage):
+    """Tests that deleting an unknown order raises rather than silently passing."""
+    mock_storage.get_order.return_value = None
+
+    with pytest.raises(ValueError, match="Order with ID 'GHOST' not found."):
+        order_tracker.delete_order("GHOST")
+
+    mock_storage.delete_order.assert_not_called()
+
+
+def test_delete_order_raises_on_empty_id(order_tracker, mock_storage):
+    """Tests that a blank order ID is rejected before any storage call."""
+    with pytest.raises(ValueError, match="Order ID must be a non-empty string."):
+        order_tracker.delete_order("")
+
+    mock_storage.get_order.assert_not_called()
+    mock_storage.delete_order.assert_not_called()
+
+
+class _ReadWriteOnlyStorage:
+    """A storage backend that supports everything except deletion."""
+
+    def save_order(self, order_id, order_data):
+        pass
+
+    def get_order(self, order_id):
+        return None
+
+    def get_all_orders(self):
+        return {}
+
+
+def test_storage_without_delete_still_constructs():
+    """
+    Deletion is an optional capability, so a read/write-only backend must
+    remain usable for the rest of the API.
+    """
+    tracker = OrderTracker(_ReadWriteOnlyStorage())
+
+    assert tracker.list_all_orders() == []
+
+
+def test_delete_order_raises_type_error_if_storage_cannot_delete():
+    """Tests that the missing capability is reported clearly when it is used."""
+    tracker = OrderTracker(_ReadWriteOnlyStorage())
+
+    with pytest.raises(TypeError,
+                       match="must implement a callable 'delete_order' method."):
+        tracker.delete_order("ORD001")
